@@ -252,39 +252,93 @@ function Mines({ bet, canBet, balance, setBalance }) {
 function Plinko({ bet, canBet, balance, setBalance }) {
   const [rows, setRows] = useState(16);
   const [risk, setRisk] = useState("medium");
-  const multipliers = useMemo(() => PLINKO_PRESETS[risk][rows] || PLINKO_PRESETS["medium"][16], [risk, rows]);
+  const multipliers = useMemo(
+    () => PLINKO_PRESETS[risk][rows] || PLINKO_PRESETS["medium"][16],
+    [risk, rows]
+  );
+
+  // VISUAL LAYOUT
+  const PEG_R = 4;                      // peg radius (px)
+  const FIELD_W = 720;                  // board width (px)
+  const PEG_Y = 28;                     // vertical spacing between peg rows
+  const PEG_X = 36;                     // horizontal spacing between pegs
+  const BOTTOM_BAR = 72;                // space reserved for payout labels
+  const TOP_PAD = 24;                   // top padding
+  const BOARD_H = TOP_PAD + rows * PEG_Y + BOTTOM_BAR;
+
+  // Ball animation state
+  const [ball, setBall] = useState(null); // {row, col, x, y, running}
   const [lastWin, setLastWin] = useState(null);
 
+  // Compute X position for a given row/col (row has row+1 pegs)
+  const xFor = (row, col) => {
+    const count = row + 1;
+    const totalWidth = (count - 1) * PEG_X;
+    const left = (FIELD_W - totalWidth) / 2;
+    return left + col * PEG_X;
+  };
+  const yFor = (row) => TOP_PAD + row * PEG_Y;
+
+  // Start a drop
   const drop = () => {
-    if (!canBet) return;
-    // take bet
+    if (!canBet || ball?.running) return;
     setBalance((b) => b - bet);
 
-    // Random walk left/right; landing slot approximated by binomial distribution
-    const steps = rows;
-    let position = 0;
-    for (let i = 0; i < steps; i++) {
-      position += Math.random() < 0.5 ? 0 : 1;
-    }
-    // Clamp to multipliers array
-    position = clamp(position, 0, multipliers.length - 1);
-    const mult = multipliers[position] ?? 0;
-    const win = bet * mult;
-    setBalance((b) => b + win);
-    setLastWin({ mult, win, position });
+    // Start above row 0, middle between two pegs (like real plinko)
+    const startCol = 0; // we’ll advance on first tick
+    setBall({ row: -1, col: startCol, x: FIELD_W / 2, y: yFor(-1), running: true });
+
+    // Step the ball down the tree
+    let r = -1;
+    let c = startCol;
+
+    const tick = () => {
+      r += 1;
+      if (r >= rows) {
+        // landed — compute slot and payout
+        const slot = Math.max(0, Math.min(multipliers.length - 1, c));
+        const mult = multipliers[slot] ?? 0;
+        const win = bet * mult;
+        setBalance((b) => b + win);
+        setLastWin({ mult, win, slot });
+        setBall((b) => b && { ...b, running: false });
+        return;
+      }
+
+      // At each row we bounce left or right: increment col by 0 or 1
+      c += Math.random() < 0.5 ? 0 : 1;
+
+      setBall({
+        row: r,
+        col: c,
+        x: xFor(r, c),              // center over the “gap” for next row
+        y: yFor(r),
+        running: true,
+      });
+
+      // Next step
+      setTimeout(tick, 160); // speed (ms between rows)
+    };
+
+    // kickoff
+    setTimeout(tick, 160);
   };
 
   return (
     <div className="grid lg:grid-cols-[320px,1fr] gap-6">
+      {/* Controls */}
       <div>
         <label className="block text-sm mb-1">Risk</label>
         <select
           className="w-full rounded-xl bg-slate-900/60 border border-slate-700 p-2 mb-3"
           value={risk}
           onChange={(e) => setRisk(e.target.value)}
+          disabled={ball?.running}
         >
-          {(["low","medium","high"]).map((r) => (
-            <option key={r} value={r} className="capitalize">{r}</option>
+          {["low", "medium", "high"].map((r) => (
+            <option key={r} value={r} className="capitalize">
+              {r}
+            </option>
           ))}
         </select>
 
@@ -293,34 +347,102 @@ function Plinko({ bet, canBet, balance, setBalance }) {
           className="w-full rounded-xl bg-slate-900/60 border border-slate-700 p-2 mb-4"
           value={rows}
           onChange={(e) => setRows(Number(e.target.value))}
+          disabled={ball?.running}
         >
-          {[8,12,16].map((n) => (
-            <option key={n} value={n}>{n}</option>
+          {[8, 12, 16].map((n) => (
+            <option key={n} value={n}>
+              {n}
+            </option>
           ))}
         </select>
 
-        <button onClick={drop} className="w-full py-3 rounded-xl font-semibold bg-emerald-500 text-slate-900">Drop Ball (Bet {format(bet)} GC)</button>
+        <button
+          onClick={drop}
+          disabled={!canBet || ball?.running}
+          className={`w-full py-3 rounded-xl font-semibold ${
+            !canBet || ball?.running
+              ? "bg-slate-700 text-slate-400 cursor-not-allowed"
+              : "bg-emerald-500 text-slate-900"
+          }`}
+        >
+          {ball?.running ? "Dropping…" : `Drop Ball (Bet ${format(bet)} GC)`}
+        </button>
 
         {lastWin && (
-          <div className="mt-3 text-sm">Last drop → Mult: <b>{lastWin.mult}x</b> • Won: <b>{format(lastWin.win)} GC</b> • Slot #{lastWin.position}</div>
+          <div className="mt-3 text-sm">
+            Last drop → Mult: <b>{lastWin.mult}x</b> • Won:{" "}
+            <b>{format(lastWin.win)} GC</b> • Slot #{lastWin.slot}
+          </div>
         )}
       </div>
 
+      {/* Board */}
       <div className="flex flex-col items-center">
-        <div className="relative w-full max-w-3xl h-[520px] bg-slate-900/40 rounded-2xl border border-slate-700 overflow-hidden">
-          {/* Very simple peg field (for visuals only) */}
-          <div className="absolute inset-0 p-10">
-            {Array.from({ length: rows }).map((_, r) => (
-              <div key={r} className="flex justify-center gap-5" style={{ transform: `translateY(${r * (480 / rows)}px)` }}>
-                {Array.from({ length: r + 1 }).map((_, c) => (
-                  <div key={c} className="h-2 w-2 rounded-full bg-slate-500/80" />
-                ))}
-              </div>
-            ))}
+        <div
+          className="relative w-full max-w-5xl bg-slate-900/40 rounded-2xl border border-slate-700 overflow-hidden"
+          style={{ height: BOARD_H }}
+        >
+          {/* Pegs */}
+          <div className="absolute inset-x-0" style={{ top: TOP_PAD }}>
+            {Array.from({ length: rows }).map((_, r) => {
+              const count = r + 1;
+              const rowLeft = (FIELD_W - (count - 1) * PEG_X) / 2;
+              return (
+                <div
+                  key={r}
+                  className="absolute left-1/2"
+                  style={{
+                    transform: `translateX(-50%) translateY(${r * PEG_Y}px)`,
+                    width: FIELD_W,
+                    height: PEG_Y,
+                  }}
+                >
+                  {Array.from({ length: count }).map((_, c) => (
+                    <div
+                      key={c}
+                      className="rounded-full bg-slate-500/80"
+                      style={{
+                        position: "absolute",
+                        width: PEG_R * 2,
+                        height: PEG_R * 2,
+                        left: rowLeft + c * PEG_X - PEG_R,
+                        top: -PEG_R,
+                      }}
+                    />
+                  ))}
+                </div>
+              );
+            })}
           </div>
-          <div className="absolute bottom-0 left-0 right-0 flex justify-between p-4">
+
+          {/* Ball */}
+          {ball && (
+            <div
+              className="absolute rounded-full bg-emerald-400 shadow"
+              style={{
+                width: 14,
+                height: 14,
+                left: (ball.x ?? FIELD_W / 2) - 7,
+                top: (ball.y ?? 0) - 7,
+                transition: "left 150ms linear, top 150ms linear",
+              }}
+            />
+          )}
+
+          {/* Payout labels as a grid to avoid overlap */}
+          <div
+            className="absolute bottom-0 left-0 right-0 p-3 grid gap-2"
+            style={{
+              gridTemplateColumns: `repeat(${multipliers.length}, minmax(0, 1fr))`,
+            }}
+          >
             {multipliers.map((m, i) => (
-              <div key={i} className="text-xs px-2 py-1 rounded-lg bg-slate-800 border border-slate-700">{m}x</div>
+              <div
+                key={i}
+                className="text-xs text-center px-2 py-1 rounded-lg bg-slate-800 border border-slate-700"
+              >
+                {m}x
+              </div>
             ))}
           </div>
         </div>
