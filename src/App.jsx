@@ -427,8 +427,8 @@ function Plinko({ bet, canBet, balance, setBalance }) {
 function Footer() {
   return (
     <div className="mt-10 pb-10 text-center text-xs text-slate-400">
-      <div>Built for fun with virtual credits. No real-money wagering. © {new Date().getFullYear()}</div>
-      <div className="mt-2">Design inspired by modern crypto casinos — recreated for educational/demo use.</div>
+      <div>Soon real money betting will be available on this. Only for Private Users. sattamax© {new Date().getFullYear()}</div>
+      <div className="mt-2">Design created by UciferAariz </div>
     </div>
   );
 }
