@@ -145,7 +145,7 @@ function TabButton({ active, onClick, children }) {
 function Mines({ bet, canBet, balance, setBalance }) {
   const size = 5; // 5x5
   const totalTiles = size * size;
-  const [mines, setMines] = useState(6);
+  const [mines, setMines] = useState(8);
   const [round, setRound] = useState(null); // { bombs:Set<number>, revealed:Set<number>, state:"idle|live|lost|won", safe:number }
   const [pendingCashout, setPendingCashout] = useState(0);
 
@@ -199,7 +199,7 @@ function Mines({ bet, canBet, balance, setBalance }) {
           onChange={(e) => setMines(Number(e.target.value))}
           disabled={round?.state === "live"}
         >
-          {[2,3,4,5,6,8,10,12,15,18,20,22,24].map((m) => (
+          {[8,10,12,15,18,20,22,24].map((m) => (
             <option key={m} value={m}>{m}</option>
           ))}
         </select>
