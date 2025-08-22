@@ -253,49 +253,44 @@ function Plinko({ bet, canBet, balance, setBalance }) {
   const [rows, setRows] = useState(16);
   const [risk, setRisk] = useState("medium");
   const multipliers = useMemo(
-    () => PLINKO_PRESETS[risk][rows] || PLINKO_PRESETS["medium"][16],
+    () => PLINKO_PRESETS[risk][rows] || PLINKO_PRESETS.medium[16],
     [risk, rows]
   );
-
-  // VISUAL LAYOUT
-  const PEG_R = 4;                      // peg radius (px)
-  const FIELD_W = 720;                  // board width (px)
-  const PEG_Y = 28;                     // vertical spacing between peg rows
-  const PEG_X = 36;                     // horizontal spacing between pegs
-  const BOTTOM_BAR = 72;                // space reserved for payout labels
-  const TOP_PAD = 24;                   // top padding
-  const BOARD_H = TOP_PAD + rows * PEG_Y + BOTTOM_BAR;
-
-  // Ball animation state
-  const [ball, setBall] = useState(null); // {row, col, x, y, running}
   const [lastWin, setLastWin] = useState(null);
+  const [ball, setBall] = useState(null); // {row,col,x,y,running}
 
-  // Compute X position for a given row/col (row has row+1 pegs)
+  // --- Layout: use normalized units inside SVG (0..1000) and scale with viewBox
+  const VB_W = 1000;
+  const VB_H = 750;         // overall height of the SVG area
+  const PAD_X = 120;        // roomy left/right padding
+  const PAD_TOP = 60;       // roomy top padding
+  const PAD_BOTTOM = 220;   // reserve space for labels beneath the pegs
+
+  const pegYGap = (VB_H - PAD_TOP - PAD_BOTTOM) / (rows - 1);
+  const pegXGap = 46;       // horizontal distance between pegs on same row
+  const pegR = 7;           // peg radius
+  const ballR = 10;
+
+  // compute X of col on row (row has row+1 pegs)
   const xFor = (row, col) => {
     const count = row + 1;
-    const totalWidth = (count - 1) * PEG_X;
-    const left = (FIELD_W - totalWidth) / 2;
-    return left + col * PEG_X;
+    const rowWidth = (count - 1) * pegXGap;
+    const left = VB_W / 2 - rowWidth / 2;
+    return left + col * pegXGap;
   };
-  const yFor = (row) => TOP_PAD + row * PEG_Y;
+  const yFor = (row) => PAD_TOP + row * pegYGap;
 
-  // Start a drop
   const drop = () => {
     if (!canBet || ball?.running) return;
     setBalance((b) => b - bet);
 
-    // Start above row 0, middle between two pegs (like real plinko)
-    const startCol = 0; // we’ll advance on first tick
-    setBall({ row: -1, col: startCol, x: FIELD_W / 2, y: yFor(-1), running: true });
-
-    // Step the ball down the tree
     let r = -1;
-    let c = startCol;
+    let c = 0;
+    setBall({ row: r, col: c, x: VB_W / 2, y: PAD_TOP - 40, running: true });
 
-    const tick = () => {
+    const step = () => {
       r += 1;
       if (r >= rows) {
-        // landed — compute slot and payout
         const slot = Math.max(0, Math.min(multipliers.length - 1, c));
         const mult = multipliers[slot] ?? 0;
         const win = bet * mult;
@@ -304,24 +299,11 @@ function Plinko({ bet, canBet, balance, setBalance }) {
         setBall((b) => b && { ...b, running: false });
         return;
       }
-
-      // At each row we bounce left or right: increment col by 0 or 1
       c += Math.random() < 0.5 ? 0 : 1;
-
-      setBall({
-        row: r,
-        col: c,
-        x: xFor(r, c),              // center over the “gap” for next row
-        y: yFor(r),
-        running: true,
-      });
-
-      // Next step
-      setTimeout(tick, 160); // speed (ms between rows)
+      setBall({ row: r, col: c, x: xFor(r, c), y: yFor(r), running: true });
+      setTimeout(step, 160);
     };
-
-    // kickoff
-    setTimeout(tick, 160);
+    setTimeout(step, 160);
   };
 
   return (
@@ -336,9 +318,7 @@ function Plinko({ bet, canBet, balance, setBalance }) {
           disabled={ball?.running}
         >
           {["low", "medium", "high"].map((r) => (
-            <option key={r} value={r} className="capitalize">
-              {r}
-            </option>
+            <option key={r} value={r}>{r}</option>
           ))}
         </select>
 
@@ -349,11 +329,7 @@ function Plinko({ bet, canBet, balance, setBalance }) {
           onChange={(e) => setRows(Number(e.target.value))}
           disabled={ball?.running}
         >
-          {[8, 12, 16].map((n) => (
-            <option key={n} value={n}>
-              {n}
-            </option>
-          ))}
+          {[8, 12, 16].map((n) => <option key={n} value={n}>{n}</option>)}
         </select>
 
         <button
@@ -370,71 +346,53 @@ function Plinko({ bet, canBet, balance, setBalance }) {
 
         {lastWin && (
           <div className="mt-3 text-sm">
-            Last drop → Mult: <b>{lastWin.mult}x</b> • Won:{" "}
-            <b>{format(lastWin.win)} GC</b> • Slot #{lastWin.slot}
+            Last drop → Mult: <b>{lastWin.mult}x</b> • Won: <b>{format(lastWin.win)} GC</b> • Slot #{lastWin.slot}
           </div>
         )}
       </div>
 
-      {/* Board */}
+      {/* Board + labels */}
       <div className="flex flex-col items-center">
-        <div
-          className="relative w-full max-w-5xl bg-slate-900/40 rounded-2xl border border-slate-700 overflow-hidden"
-          style={{ height: BOARD_H }}
-        >
-          {/* Pegs */}
-          <div className="absolute inset-x-0" style={{ top: TOP_PAD }}>
+        <div className="w-full max-w-5xl rounded-2xl border border-slate-700 bg-slate-900/40 p-6">
+          {/* SVG board keeps big airy spacing like Stake */}
+          <svg
+            viewBox={`0 0 ${VB_W} ${VB_H}`}
+            className="w-full block rounded-xl"
+            style={{ display: "block" }}
+          >
+            {/* inner rounded panel */}
+            <rect x="8" y="8" width={VB_W - 16} height={VB_H - 16} rx="24" ry="24" fill="transparent" stroke="rgba(100,116,139,0.4)" />
+
+            {/* PEGS */}
             {Array.from({ length: rows }).map((_, r) => {
               const count = r + 1;
-              const rowLeft = (FIELD_W - (count - 1) * PEG_X) / 2;
-              return (
-                <div
-                  key={r}
-                  className="absolute left-1/2"
-                  style={{
-                    transform: `translateX(-50%) translateY(${r * PEG_Y}px)`,
-                    width: FIELD_W,
-                    height: PEG_Y,
-                  }}
-                >
-                  {Array.from({ length: count }).map((_, c) => (
-                    <div
-                      key={c}
-                      className="rounded-full bg-slate-500/80"
-                      style={{
-                        position: "absolute",
-                        width: PEG_R * 2,
-                        height: PEG_R * 2,
-                        left: rowLeft + c * PEG_X - PEG_R,
-                        top: -PEG_R,
-                      }}
-                    />
-                  ))}
-                </div>
-              );
+              return Array.from({ length: count }).map((_, c) => (
+                <circle
+                  key={`${r}-${c}`}
+                  cx={xFor(r, c)}
+                  cy={yFor(r)}
+                  r={pegR}
+                  fill="rgba(148,163,184,0.85)"
+                />
+              ));
             })}
-          </div>
 
-          {/* Ball */}
-          {ball && (
-            <div
-              className="absolute rounded-full bg-emerald-400 shadow"
-              style={{
-                width: 14,
-                height: 14,
-                left: (ball.x ?? FIELD_W / 2) - 7,
-                top: (ball.y ?? 0) - 7,
-                transition: "left 150ms linear, top 150ms linear",
-              }}
-            />
-          )}
+            {/* BALL */}
+            {ball && (
+              <circle
+                cx={ball.x}
+                cy={ball.y}
+                r={ballR}
+                fill="#34d399"
+                style={{ transition: "cx 150ms linear, cy 150ms linear" }}
+              />
+            )}
+          </svg>
 
-          {/* Payout labels as a grid to avoid overlap */}
+          {/* Payout chips — centered, roomy, never overlap */}
           <div
-            className="absolute bottom-0 left-0 right-0 p-3 grid gap-2"
-            style={{
-              gridTemplateColumns: `repeat(${multipliers.length}, minmax(0, 1fr))`,
-            }}
+            className="mt-4 grid gap-2"
+            style={{ gridTemplateColumns: `repeat(${multipliers.length}, minmax(48px, 1fr))` }}
           >
             {multipliers.map((m, i) => (
               <div
@@ -450,6 +408,7 @@ function Plinko({ bet, canBet, balance, setBalance }) {
     </div>
   );
 }
+
 
 function Footer() {
   return (
