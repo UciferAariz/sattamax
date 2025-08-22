@@ -99,8 +99,20 @@ function TopBar({ balance, setBalance }) {
 }
 
 function Controls({ bet, setBet, canBet }) {
-  const half = () => setBet((v) => Math.max(0.01, Math.floor((v / 2) * 100) / 100));
-  const dbl = () => setBet((v) => Math.floor((v * 2) * 100) / 100);
+  const MIN_BET = 200;
+  const MAX_BET = 1_000_000;
+
+  const half = () =>
+    setBet((v) => Math.max(MIN_BET, Math.floor((v / 2) * 100) / 100));
+
+  const dbl = () =>
+    setBet((v) => Math.min(MAX_BET, Math.floor(v * 2 * 100) / 100));
+
+  const handleChange = (e) => {
+    const raw = Number(e.target.value) || 0;
+    const clamped = Math.min(Math.max(raw, MIN_BET), MAX_BET);
+    setBet(clamped);
+  };
 
   return (
     <aside className="bg-slate-800/60 rounded-2xl shadow-xl border border-slate-700/50 p-4 h-fit">
@@ -110,27 +122,29 @@ function Controls({ bet, setBet, canBet }) {
       </div>
 
       <label className="block text-sm mb-1">Bet amount</label>
-      <div className="flex gap-2 mb-4">
+      <div className="flex gap-2 mb-1">
         <input
           type="number"
-          step="0.01"
-          min="0"
+          step="10"
+          min={MIN_BET}
           className="flex-1 rounded-xl bg-slate-900/60 border border-slate-700 p-2 outline-none"
           value={bet}
-          onChange={(e) => setBet(e.target.value)}
+          onChange={handleChange}
         />
         <button onClick={half} className="px-3 rounded-xl bg-slate-700/80">½</button>
         <button onClick={dbl} className="px-3 rounded-xl bg-slate-700/80">2×</button>
       </div>
-
-      <div className="text-xs text-slate-400">Credits only • No real money • For fun</div>
+      <div className="text-[11px] text-slate-400 mb-2">Minimum bet: {MIN_BET} GC</div>
 
       {!canBet && (
-        <div className="mt-3 text-amber-300 text-sm">Bet must be greater than 0 and not exceed your balance.</div>
+        <div className="mt-1 text-amber-300 text-sm">
+          Bet must be at least {MIN_BET} GC and not exceed your balance.
+        </div>
       )}
     </aside>
   );
 }
+
 
 function TabButton({ active, onClick, children }) {
   return (
