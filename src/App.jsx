@@ -27,13 +27,14 @@ async function logEvent({ game, action, amount, balanceAfter, meta = {} }) {
 // ---------- RPC wrappers with logging ----------
 async function debit(amount, meta = {}, game = "system") {
   const { data, error } = await supabase.rpc("place_bet", { amount });
-  if (error) throw error;
-  const row = takeRow(data);
-  if (row.ok) {
-    await logEvent({ game, action: "bet", amount, balanceAfter: Number(row.balance), meta });
+  if (error) {
+    console.error("[place_bet]", error);
+    throw new Error(error.message || "place_bet failed");
   }
-  return row; // { balance, ok }
+  const row = takeRow(data);
+  return row;
 }
+
 async function credit(amount, meta = {}, game = "system") {
   const { data, error } = await supabase.rpc("payout", { amount });
   if (error) throw error;
