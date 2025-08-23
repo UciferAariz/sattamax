@@ -1,20 +1,35 @@
 import React, { useMemo, useState } from "react";
+import { supabase } from "./lib/supabase";
 
 // --- Utility helpers ---
-const format = (n) => n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const format = (n) =>
+  n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
 
-// Basic multipliers for Mines (approx, not exact Stake odds)
+// Normalize RPC result (Supabase can return a single object or an array)
+const takeRow = (data) => (Array.isArray(data) ? data[0] : data) || {};
+
+// RPC wrappers
+async function debit(amount) {
+  const { data, error } = await supabase.rpc("place_bet", { amount });
+  if (error) throw error;
+  return takeRow(data); // { balance, ok }
+}
+async function credit(amount) {
+  const { data, error } = await supabase.rpc("payout", { amount });
+  if (error) throw error;
+  return takeRow(data); // { balance, ok }
+}
+
+// Basic multipliers for Mines (approx)
 function minesMultiplier(safeReveals, totalTiles, mines) {
-  // Simple fair-ish formula: payout = bet * ( (totalTiles) / (totalTiles - mines) )^(safeReveals) * 0.97 (house edge simulation)
-  // Since we are using game credits only, we keep a tiny edge for realism; set to 1.00 if you want zero edge.
-  const edge = 0.99; // softer edge for fun
+  const edge = 0.99;
   if (safeReveals === 0) return 1;
   const base = totalTiles / (totalTiles - mines);
   return Math.pow(base, safeReveals) * edge;
 }
 
-// Plinko multipliers presets (very simplified)
+// Plinko multipliers presets (simplified)
 const PLINKO_PRESETS = {
   low: {
     8: [0.5, 0.75, 0.9, 1, 3, 1, 0.9, 0.75, 0.5],
@@ -35,36 +50,89 @@ const PLINKO_PRESETS = {
 
 export default function App() {
   const [tab, setTab] = useState("mines");
-  const [balance, setBalance] = useState(() => {
-    const v = localStorage.getItem("balance");
-    return v ? Number(v) : 1000;
-  });
-  const [bet, setBet] = useState(10);
+  const [bet, setBet] = useState(200);
 
+  // --- Supabase auth/session
+  const [user, setUser] = useState(null);
+  const [balance, setBalance] = useState(0);
+  const [loadingGrant, setLoadingGrant] = useState(true);
+
+  // On load, fetch session and subscribe to changes
   React.useEffect(() => {
-    localStorage.setItem("balance", balance);
-  }, [balance]);
+    supabase.auth.getSession().then(({ data }) => {
+      setUser(data.session?.user || null);
+    });
+    const { data: sub } = supabase.auth.onAuthStateChange((_, session) => {
+      setUser(session?.user || null);
+    });
+    return () => sub.subscription?.unsubscribe?.();
+  }, []);
+
+  // When authenticated, call the daily grant RPC to ensure 1000/day
+  React.useEffect(() => {
+    const run = async () => {
+      if (!user) {
+        setBalance(0);
+        setLoadingGrant(false);
+        return;
+      }
+      setLoadingGrant(true);
+      const { data, error } = await supabase.rpc("grant_daily_credits");
+      if (error) {
+        console.error("grant_daily_credits error:", error);
+        setBalance(0);
+      } else {
+        const row = Array.isArray(data) ? data[0] : data;
+        setBalance(Number(row?.balance || 0));
+      }
+      setLoadingGrant(false);
+    };
+    run();
+  }, [user]);
 
   const canBet = bet > 0 && bet <= balance;
 
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+    setBalance(0);
+  };
+
+  if (!user) {
+    return (
+      <div className="min-h-screen bg-slate-900 text-slate-100 grid place-items-center p-4">
+        <LoginCard />
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-slate-900 text-slate-100">
-      <TopBar balance={balance} setBalance={setBalance} />
+      <TopBar
+        balance={balance}
+        userLabel={user.email || user.id}
+        onLogout={handleLogout}
+      />
 
       <div className="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-[320px,1fr] gap-6 p-4">
         <Controls
           bet={bet}
-          setBet={(v) => setBet(Math.min(Math.max(Number(v) || 0, 0), 1_000_000))}
+          setBet={(v) => setBet(Math.min(Math.max(Number(v) || 0, 200), 1_000_000))}
           canBet={canBet}
         />
 
         <div className="bg-slate-800/60 rounded-2xl p-4 shadow-xl border border-slate-700/50">
           <div className="flex gap-2 mb-4">
-            <TabButton active={tab === "mines"} onClick={() => setTab("mines")}>Mines</TabButton>
-            <TabButton active={tab === "plinko"} onClick={() => setTab("plinko")}>Plinko</TabButton>
+            <TabButton active={tab === "mines"} onClick={() => setTab("mines")}>
+              Mines
+            </TabButton>
+            <TabButton active={tab === "plinko"} onClick={() => setTab("plinko")}>
+              Plinko
+            </TabButton>
           </div>
 
-          {tab === "mines" ? (
+          {loadingGrant ? (
+            <div className="p-6 text-slate-300">Loading your daily credits…</div>
+          ) : tab === "mines" ? (
             <Mines bet={bet} canBet={canBet} balance={balance} setBalance={setBalance} />
           ) : (
             <Plinko bet={bet} canBet={canBet} balance={balance} setBalance={setBalance} />
@@ -77,7 +145,9 @@ export default function App() {
   );
 }
 
-function TopBar({ balance, setBalance }) {
+/* ---------------- UI bits ---------------- */
+
+function TopBar({ balance, userLabel, onLogout }) {
   return (
     <div className="border-b border-slate-800/80 bg-slate-900/60 sticky top-0 backdrop-blur z-10">
       <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
@@ -86,15 +156,96 @@ function TopBar({ balance, setBalance }) {
           <span className="font-semibold tracking-wide">GameCredits Casino</span>
         </div>
         <div className="flex items-center gap-3">
+          <div className="px-3 py-1.5 rounded-xl bg-slate-800 border border-slate-700 text-sm">
+            User: <b>{userLabel}</b> • Balance: <b>{format(balance)}</b> GC
+          </div>
           <button
             className="px-3 py-1.5 rounded-xl bg-slate-800 border border-slate-700 text-xs"
-            onClick={() => setBalance((b) => b + 100)}
-            title="Get daily faucet"
-          >+100 Faucet</button>
-          <div className="px-3 py-1.5 rounded-xl bg-slate-800 border border-slate-700 text-sm">Balance: <b>{format(balance)}</b> GC</div>
+            onClick={onLogout}
+          >
+            Logout
+          </button>
         </div>
       </div>
     </div>
+  );
+}
+
+// Email/password auth
+function LoginCard() {
+  const [mode, setMode] = useState("signin"); // signin | signup
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  the [err, setErr] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setErr("");
+    setLoading(true);
+    try {
+      if (mode === "signup") {
+        const { error } = await supabase.auth.signUp({ email, password });
+        if (error) throw error;
+      }
+      const { error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) throw error;
+      // onAuthStateChange updates App
+    } catch (e) {
+      setErr(e.message || "Auth error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <form
+      onSubmit={submit}
+      className="w-full max-w-sm bg-slate-800/60 border border-slate-700 rounded-2xl p-6 shadow-xl"
+    >
+      <h1 className="text-xl font-semibold mb-4">
+        {mode === "signup" ? "Create account" : "Sign in"}
+      </h1>
+      <label className="block text-sm mb-1">Email</label>
+      <input
+        type="email"
+        required
+        className="w-full rounded-xl bg-slate-900/60 border border-slate-700 p-2 outline-none mb-3"
+        value={email}
+        onChange={(e) => setEmail(e.target.value)}
+      />
+      <label className="block text-sm mb-1">Password</label>
+      <input
+        type="password"
+        required
+        className="w-full rounded-xl bg-slate-900/60 border border-slate-700 p-2 outline-none mb-3"
+        value={password}
+        onChange={(e) => setPassword(e.target.value)}
+      />
+
+      {err && <div className="text-red-300 text-sm mb-2">{err}</div>}
+
+      <button
+        type="submit"
+        disabled={loading}
+        className={`w-full py-2.5 rounded-xl font-semibold ${
+          loading ? "bg-slate-700" : "bg-emerald-500 text-slate-900"
+        }`}
+      >
+        {loading ? "Please wait…" : mode === "signup" ? "Sign up" : "Sign in"}
+      </button>
+
+      <div className="text-xs text-slate-400 mt-3">
+        {mode === "signup" ? "Already have an account?" : "New here?"}{" "}
+        <button
+          type="button"
+          onClick={() => setMode(mode === "signup" ? "signin" : "signup")}
+          className="underline"
+        >
+          {mode === "signup" ? "Sign in" : "Create one"}
+        </button>
+      </div>
+    </form>
   );
 }
 
@@ -102,11 +253,8 @@ function Controls({ bet, setBet, canBet }) {
   const MIN_BET = 200;
   const MAX_BET = 1_000_000;
 
-  const half = () =>
-    setBet((v) => Math.max(MIN_BET, Math.floor((v / 2) * 100) / 100));
-
-  const dbl = () =>
-    setBet((v) => Math.min(MAX_BET, Math.floor(v * 2 * 100) / 100));
+  const half = () => setBet((v) => Math.max(MIN_BET, Math.floor((v / 2) * 100) / 100));
+  const dbl = () => setBet((v) => Math.min(MAX_BET, Math.floor(v * 2 * 100) / 100));
 
   const handleChange = (e) => {
     const raw = Number(e.target.value) || 0;
@@ -145,59 +293,93 @@ function Controls({ bet, setBet, canBet }) {
   );
 }
 
-
 function TabButton({ active, onClick, children }) {
   return (
     <button
       onClick={onClick}
-      className={`px-4 py-2 rounded-xl border ${active ? "bg-slate-900 border-slate-600" : "bg-slate-800/50 border-slate-700 hover:bg-slate-800"}`}
-    >{children}</button>
+      className={`px-4 py-2 rounded-xl border ${
+        active ? "bg-slate-900 border-slate-600" : "bg-slate-800/50 border-slate-700 hover:bg-slate-800"
+      }`}
+    >
+      {children}
+    </button>
   );
 }
 
-// --- MINES ---
+/* ---------------- Games ---------------- */
+
+// --- MINES (8–24) with server debit/cashout
 function Mines({ bet, canBet, balance, setBalance }) {
-  const size = 5; // 5x5
+  const size = 5;
   const totalTiles = size * size;
   const [mines, setMines] = useState(8);
-  const [round, setRound] = useState(null); // { bombs:Set<number>, revealed:Set<number>, state:"idle|live|lost|won", safe:number }
+  const [round, setRound] = useState(null); // { bombs:Set, revealed:Set, state, safe }
   const [pendingCashout, setPendingCashout] = useState(0);
+  const [busy, setBusy] = useState(false);
 
-  const startRound = () => {
-    if (!canBet) return;
-    if (round?.state === "live") return;
-    // take bet
-    setBalance((b) => b - bet);
-    const bombs = new Set();
-    while (bombs.size < mines) {
-      bombs.add(Math.floor(Math.random() * totalTiles));
+  const startRound = async () => {
+    if (!canBet || busy) return;
+    setBusy(true);
+    try {
+      // debit on server
+      const res = await debit(bet);
+      if (!res.ok) {
+        alert("Insufficient funds.");
+        return;
+      }
+      setBalance(Number(res.balance));
+
+      // start local round
+      const bombs = new Set();
+      while (bombs.size < mines) bombs.add(Math.floor(Math.random() * totalTiles));
+      setRound({ bombs, revealed: new Set(), state: "live", safe: 0 });
+      setPendingCashout(0);
+    } catch (e) {
+      console.error(e);
+      alert("Could not start round. Please try again.");
+    } finally {
+      setBusy(false);
     }
-    setRound({ bombs, revealed: new Set(), state: "live", safe: 0 });
-    setPendingCashout(0);
   };
 
   const clickTile = (idx) => {
     if (!round || round.state !== "live") return;
     if (round.revealed.has(idx)) return;
-    const newRevealed = new Set(round.revealed);
-    newRevealed.add(idx);
+
+    const revealed = new Set(round.revealed);
+    revealed.add(idx);
+
     if (round.bombs.has(idx)) {
-      setRound({ ...round, revealed: newRevealed, state: "lost" });
+      // loss (bet already debited)
+      setRound({ ...round, revealed, state: "lost" });
       setPendingCashout(0);
       return;
     }
+
     const safe = round.safe + 1;
     const mult = minesMultiplier(safe, totalTiles, mines);
     const potential = bet * mult;
-    setRound({ ...round, revealed: newRevealed, safe });
+    setRound({ ...round, revealed, safe });
     setPendingCashout(potential);
   };
 
-  const cashout = () => {
-    if (pendingCashout > 0 && round?.state !== "lost") {
-      setBalance((b) => b + pendingCashout);
-      setRound({ ...round, state: "won" });
+  const cashout = async () => {
+    if (busy || !pendingCashout || round?.state === "lost") return;
+    setBusy(true);
+    try {
+      const res = await credit(pendingCashout);
+      if (!res.ok) {
+        alert("Cashout failed.");
+        return;
+      }
+      setBalance(Number(res.balance));
+      setRound((r) => r && { ...r, state: "won" });
       setPendingCashout(0);
+    } catch (e) {
+      console.error(e);
+      alert("Cashout failed. Please try again.");
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -211,17 +393,22 @@ function Mines({ bet, canBet, balance, setBalance }) {
           className="w-full rounded-xl bg-slate-900/60 border border-slate-700 p-2 mb-3"
           value={mines}
           onChange={(e) => setMines(Number(e.target.value))}
-          disabled={round?.state === "live"}
+          disabled={round?.state === "live" || busy}
         >
-          {[8,10,12,15,18,20,22,24].map((m) => (
+          {[8, 10, 12, 15, 18, 20, 22, 24].map((m) => (
             <option key={m} value={m}>{m}</option>
           ))}
         </select>
 
         <button
-          className={`w-full py-3 rounded-xl font-semibold ${round?.state === "live" ? "bg-amber-500 text-slate-900" : "bg-emerald-500 text-slate-900"}`}
+          className={`w-full py-3 rounded-xl font-semibold ${
+            round?.state === "live" ? "bg-amber-500 text-slate-900" : "bg-emerald-500 text-slate-900"
+          } ${busy ? "opacity-60 cursor-not-allowed" : ""}`}
           onClick={round?.state === "live" ? cashout : startRound}
-        >{round?.state === "live" ? `Cashout ${format(pendingCashout)} GC` : `Bet ${format(bet)} GC`}</button>
+          disabled={busy}
+        >
+          {round?.state === "live" ? `Cashout ${format(pendingCashout)} GC` : `Bet ${format(bet)} GC`}
+        </button>
 
         <div className="mt-3 text-sm text-slate-300">
           {round ? (
@@ -248,9 +435,10 @@ function Mines({ bet, canBet, balance, setBalance }) {
             <button
               key={idx}
               onClick={() => clickTile(idx)}
-              disabled={!round || round.state !== "live"}
+              disabled={!round || round.state !== "live" || busy}
               className={`h-20 w-20 rounded-xl grid place-items-center text-2xl select-none border transition ${
-                show ? (isBomb ? "bg-red-600/30 border-red-500" : "bg-emerald-600/30 border-emerald-400") : "bg-slate-900/60 border-slate-700 hover:border-slate-500"
+                show ? (isBomb ? "bg-red-600/30 border-red-500" : "bg-emerald-600/30 border-emerald-400")
+                     : "bg-slate-900/60 border-slate-700 hover:border-slate-500"
               }`}
             >
               {show ? (isBomb ? "💣" : "💎") : ""}
@@ -262,7 +450,7 @@ function Mines({ bet, canBet, balance, setBalance }) {
   );
 }
 
-// --- PLINKO ---
+// --- PLINKO (SVG with animated ball) + server debit/payout
 function Plinko({ bet, canBet, balance, setBalance }) {
   const [rows, setRows] = useState(16);
   const [risk, setRisk] = useState("medium");
@@ -271,21 +459,18 @@ function Plinko({ bet, canBet, balance, setBalance }) {
     [risk, rows]
   );
   const [lastWin, setLastWin] = useState(null);
-  const [ball, setBall] = useState(null); // {row,col,x,y,running}
+  const [ball, setBall] = useState(null);
+  const [busy, setBusy] = useState(false);
 
-  // --- Layout: use normalized units inside SVG (0..1000) and scale with viewBox
   const VB_W = 1000;
-  const VB_H = 750;         // overall height of the SVG area
-  const PAD_X = 120;        // roomy left/right padding
-  const PAD_TOP = 60;       // roomy top padding
-  const PAD_BOTTOM = 220;   // reserve space for labels beneath the pegs
-
+  const VB_H = 750;
+  const PAD_TOP = 60;
+  const PAD_BOTTOM = 220;
   const pegYGap = (VB_H - PAD_TOP - PAD_BOTTOM) / (rows - 1);
-  const pegXGap = 46;       // horizontal distance between pegs on same row
-  const pegR = 7;           // peg radius
+  const pegXGap = 46;
+  const pegR = 7;
   const ballR = 10;
 
-  // compute X of col on row (row has row+1 pegs)
   const xFor = (row, col) => {
     const count = row + 1;
     const rowWidth = (count - 1) * pegXGap;
@@ -294,42 +479,61 @@ function Plinko({ bet, canBet, balance, setBalance }) {
   };
   const yFor = (row) => PAD_TOP + row * pegYGap;
 
-  const drop = () => {
-    if (!canBet || ball?.running) return;
-    setBalance((b) => b - bet);
-
-    let r = -1;
-    let c = 0;
-    setBall({ row: r, col: c, x: VB_W / 2, y: PAD_TOP - 40, running: true });
-
-    const step = () => {
-      r += 1;
-      if (r >= rows) {
-        const slot = Math.max(0, Math.min(multipliers.length - 1, c));
-        const mult = multipliers[slot] ?? 0;
-        const win = bet * mult;
-        setBalance((b) => b + win);
-        setLastWin({ mult, win, slot });
-        setBall((b) => b && { ...b, running: false });
+  const drop = async () => {
+    if (!canBet || busy) return;
+    setBusy(true);
+    try {
+      // debit
+      const res = await debit(bet);
+      if (!res.ok) {
+        alert("Insufficient funds.");
+        setBusy(false);
         return;
       }
-      c += Math.random() < 0.5 ? 0 : 1;
-      setBall({ row: r, col: c, x: xFor(r, c), y: yFor(r), running: true });
+      setBalance(Number(res.balance));
+
+      // animate
+      let r = -1, c = 0;
+      setBall({ row: r, col: c, x: VB_W / 2, y: PAD_TOP - 40, running: true });
+
+      const step = async () => {
+        r += 1;
+        if (r >= rows) {
+          const slot = Math.max(0, Math.min(multipliers.length - 1, c));
+          const mult = multipliers[slot] ?? 0;
+          const win = bet * mult;
+
+          if (win > 0) {
+            const res2 = await credit(win);
+            setBalance(Number(res2.balance));
+          }
+          setLastWin({ mult, win, slot });
+          setBall((b) => b && { ...b, running: false });
+          setBusy(false);
+          return;
+        }
+        c += Math.random() < 0.5 ? 0 : 1;
+        setBall({ row: r, col: c, x: xFor(r, c), y: yFor(r), running: true });
+        setTimeout(step, 160);
+      };
+
       setTimeout(step, 160);
-    };
-    setTimeout(step, 160);
+    } catch (e) {
+      console.error(e);
+      alert("Drop failed. Please try again.");
+      setBusy(false);
+    }
   };
 
   return (
     <div className="grid lg:grid-cols-[320px,1fr] gap-6">
-      {/* Controls */}
       <div>
         <label className="block text-sm mb-1">Risk</label>
         <select
           className="w-full rounded-xl bg-slate-900/60 border border-slate-700 p-2 mb-3"
           value={risk}
           onChange={(e) => setRisk(e.target.value)}
-          disabled={ball?.running}
+          disabled={ball?.running || busy}
         >
           {["low", "medium", "high"].map((r) => (
             <option key={r} value={r}>{r}</option>
@@ -341,21 +545,21 @@ function Plinko({ bet, canBet, balance, setBalance }) {
           className="w-full rounded-xl bg-slate-900/60 border border-slate-700 p-2 mb-4"
           value={rows}
           onChange={(e) => setRows(Number(e.target.value))}
-          disabled={ball?.running}
+          disabled={ball?.running || busy}
         >
           {[8, 12, 16].map((n) => <option key={n} value={n}>{n}</option>)}
         </select>
 
         <button
           onClick={drop}
-          disabled={!canBet || ball?.running}
+          disabled={!canBet || ball?.running || busy}
           className={`w-full py-3 rounded-xl font-semibold ${
-            !canBet || ball?.running
+            !canBet || ball?.running || busy
               ? "bg-slate-700 text-slate-400 cursor-not-allowed"
               : "bg-emerald-500 text-slate-900"
           }`}
         >
-          {ball?.running ? "Dropping…" : `Drop Ball (Bet ${format(bet)} GC)`}
+          {busy ? "Processing…" : ball?.running ? "Dropping…" : `Drop Ball (Bet ${format(bet)} GC)`}
         </button>
 
         {lastWin && (
@@ -365,33 +569,16 @@ function Plinko({ bet, canBet, balance, setBalance }) {
         )}
       </div>
 
-      {/* Board + labels */}
       <div className="flex flex-col items-center">
         <div className="w-full max-w-5xl rounded-2xl border border-slate-700 bg-slate-900/40 p-6">
-          {/* SVG board keeps big airy spacing like Stake */}
-          <svg
-            viewBox={`0 0 ${VB_W} ${VB_H}`}
-            className="w-full block rounded-xl"
-            style={{ display: "block" }}
-          >
-            {/* inner rounded panel */}
+          <svg viewBox={`0 0 ${VB_W} ${VB_H}`} className="w-full block rounded-xl" style={{ display: "block" }}>
             <rect x="8" y="8" width={VB_W - 16} height={VB_H - 16} rx="24" ry="24" fill="transparent" stroke="rgba(100,116,139,0.4)" />
-
-            {/* PEGS */}
             {Array.from({ length: rows }).map((_, r) => {
               const count = r + 1;
               return Array.from({ length: count }).map((_, c) => (
-                <circle
-                  key={`${r}-${c}`}
-                  cx={xFor(r, c)}
-                  cy={yFor(r)}
-                  r={pegR}
-                  fill="rgba(148,163,184,0.85)"
-                />
+                <circle key={`${r}-${c}`} cx={xFor(r, c)} cy={yFor(r)} r={pegR} fill="rgba(148,163,184,0.85)" />
               ));
             })}
-
-            {/* BALL */}
             {ball && (
               <circle
                 cx={ball.x}
@@ -403,16 +590,9 @@ function Plinko({ bet, canBet, balance, setBalance }) {
             )}
           </svg>
 
-          {/* Payout chips — centered, roomy, never overlap */}
-          <div
-            className="mt-4 grid gap-2"
-            style={{ gridTemplateColumns: `repeat(${multipliers.length}, minmax(48px, 1fr))` }}
-          >
+          <div className="mt-4 grid gap-2" style={{ gridTemplateColumns: `repeat(${multipliers.length}, minmax(48px, 1fr))` }}>
             {multipliers.map((m, i) => (
-              <div
-                key={i}
-                className="text-xs text-center px-2 py-1 rounded-lg bg-slate-800 border border-slate-700"
-              >
+              <div key={i} className="text-xs text-center px-2 py-1 rounded-lg bg-slate-800 border border-slate-700">
                 {m}x
               </div>
             ))}
@@ -422,7 +602,6 @@ function Plinko({ bet, canBet, balance, setBalance }) {
     </div>
   );
 }
-
 
 function Footer() {
   return (
