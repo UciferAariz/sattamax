@@ -9,16 +9,39 @@ const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
 // Normalize RPC result (Supabase can return a single object or an array)
 const takeRow = (data) => (Array.isArray(data) ? data[0] : data) || {};
 
-// RPC wrappers
-async function debit(amount) {
+// ---------- History logger (RPC) ----------
+async function logEvent({ game, action, amount, balanceAfter, meta = {} }) {
+  try {
+    await supabase.rpc("log_wallet_event", {
+      p_game: game,
+      p_action: action,
+      p_amount: amount,
+      p_balance_after: balanceAfter,
+      p_meta: meta
+    });
+  } catch (e) {
+    console.warn("log_wallet_event failed:", e.message);
+  }
+}
+
+// ---------- RPC wrappers with logging ----------
+async function debit(amount, meta = {}, game = "system") {
   const { data, error } = await supabase.rpc("place_bet", { amount });
   if (error) throw error;
-  return takeRow(data); // { balance, ok }
+  const row = takeRow(data);
+  if (row.ok) {
+    await logEvent({ game, action: "bet", amount, balanceAfter: Number(row.balance), meta });
+  }
+  return row; // { balance, ok }
 }
-async function credit(amount) {
+async function credit(amount, meta = {}, game = "system") {
   const { data, error } = await supabase.rpc("payout", { amount });
   if (error) throw error;
-  return takeRow(data); // { balance, ok }
+  const row = takeRow(data);
+  if (row.ok) {
+    await logEvent({ game, action: "payout", amount, balanceAfter: Number(row.balance), meta });
+  }
+  return row; // { balance, ok }
 }
 
 // Basic multipliers for Mines (approx)
@@ -83,7 +106,12 @@ export default function App() {
         setBalance(0);
       } else {
         const row = Array.isArray(data) ? data[0] : data;
-        setBalance(Number(row?.balance || 0));
+        const bal = Number(row?.balance || 0);
+        setBalance(bal);
+        // Log grant if it happened today
+        if (row?.granted) {
+          await logEvent({ game: "system", action: "grant", amount: 1000, balanceAfter: bal });
+        }
       }
       setLoadingGrant(false);
     };
@@ -138,6 +166,11 @@ export default function App() {
             <Plinko bet={bet} canBet={canBet} balance={balance} setBalance={setBalance} />
           )}
         </div>
+
+        {/* Full-width history panel */}
+        <div className="lg:col-span-2">
+          <HistoryPanel />
+        </div>
       </div>
 
       <Footer />
@@ -190,7 +223,6 @@ function LoginCard() {
       }
       const { error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) throw error;
-      // onAuthStateChange updates App
     } catch (e) {
       setErr(e.message || "Auth error");
     } finally {
@@ -308,7 +340,7 @@ function TabButton({ active, onClick, children }) {
 
 /* ---------------- Games ---------------- */
 
-// --- MINES (8–24) with server debit/cashout
+// --- MINES (8–24) with server debit/cashout + history
 function Mines({ bet, canBet, balance, setBalance }) {
   const size = 5;
   const totalTiles = size * size;
@@ -321,15 +353,13 @@ function Mines({ bet, canBet, balance, setBalance }) {
     if (!canBet || busy) return;
     setBusy(true);
     try {
-      // debit on server
-      const res = await debit(bet);
+      const res = await debit(bet, { mines }, "mines");
       if (!res.ok) {
         alert("Insufficient funds.");
         return;
       }
       setBalance(Number(res.balance));
 
-      // start local round
       const bombs = new Set();
       while (bombs.size < mines) bombs.add(Math.floor(Math.random() * totalTiles));
       setRound({ bombs, revealed: new Set(), state: "live", safe: 0 });
@@ -350,7 +380,6 @@ function Mines({ bet, canBet, balance, setBalance }) {
     revealed.add(idx);
 
     if (round.bombs.has(idx)) {
-      // loss (bet already debited)
       setRound({ ...round, revealed, state: "lost" });
       setPendingCashout(0);
       return;
@@ -367,7 +396,8 @@ function Mines({ bet, canBet, balance, setBalance }) {
     if (busy || !pendingCashout || round?.state === "lost") return;
     setBusy(true);
     try {
-      const res = await credit(pendingCashout);
+      const mult = minesMultiplier(round.safe, totalTiles, mines);
+      const res = await credit(pendingCashout, { mines, safe: round.safe, mult }, "mines");
       if (!res.ok) {
         alert("Cashout failed.");
         return;
@@ -450,7 +480,7 @@ function Mines({ bet, canBet, balance, setBalance }) {
   );
 }
 
-// --- PLINKO (SVG with animated ball) + server debit/payout
+// --- PLINKO (SVG with animated ball) + server debit/payout + history
 function Plinko({ bet, canBet, balance, setBalance }) {
   const [rows, setRows] = useState(16);
   const [risk, setRisk] = useState("medium");
@@ -484,7 +514,7 @@ function Plinko({ bet, canBet, balance, setBalance }) {
     setBusy(true);
     try {
       // debit
-      const res = await debit(bet);
+      const res = await debit(bet, { rows, risk }, "plinko");
       if (!res.ok) {
         alert("Insufficient funds.");
         setBusy(false);
@@ -504,8 +534,23 @@ function Plinko({ bet, canBet, balance, setBalance }) {
           const win = bet * mult;
 
           if (win > 0) {
-            const res2 = await credit(win);
+            const res2 = await credit(win, { rows, risk, slot, mult }, "plinko");
             setBalance(Number(res2.balance));
+            await logEvent({
+              game: "plinko",
+              action: "drop_end",
+              amount: 0,
+              balanceAfter: Number(res2.balance),
+              meta: { rows, risk, slot, mult }
+            });
+          } else {
+            await logEvent({
+              game: "plinko",
+              action: "drop_end",
+              amount: 0,
+              balanceAfter: Number(res.balance),
+              meta: { rows, risk, slot, mult }
+            });
           }
           setLastWin({ mult, win, slot });
           setBall((b) => b && { ...b, running: false });
@@ -576,14 +621,14 @@ function Plinko({ bet, canBet, balance, setBalance }) {
             {Array.from({ length: rows }).map((_, r) => {
               const count = r + 1;
               return Array.from({ length: count }).map((_, c) => (
-                <circle key={`${r}-${c}`} cx={xFor(r, c)} cy={yFor(r)} r={pegR} fill="rgba(148,163,184,0.85)" />
+                <circle key={`${r}-${c}`} cx={xFor(r, c)} cy={yFor(r)} r={7} fill="rgba(148,163,184,0.85)" />
               ));
             })}
             {ball && (
               <circle
                 cx={ball.x}
                 cy={ball.y}
-                r={ballR}
+                r={10}
                 fill="#34d399"
                 style={{ transition: "cx 150ms linear, cy 150ms linear" }}
               />
@@ -599,6 +644,70 @@ function Plinko({ bet, canBet, balance, setBalance }) {
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+// --- History Panel ---
+function HistoryPanel() {
+  const [rows, setRows] = React.useState([]);
+  const [loading, setLoading] = React.useState(true);
+
+  const load = async () => {
+    setLoading(true);
+    const { data, error } = await supabase
+      .from("wallet_events")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .limit(25);
+    if (!error) setRows(data || []);
+    setLoading(false);
+  };
+
+  React.useEffect(() => { load(); }, []);
+
+  React.useEffect(() => {
+    const onVis = () => { if (document.visibilityState === "visible") load(); };
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, []);
+
+  return (
+    <div className="bg-slate-800/60 rounded-2xl p-4 shadow-xl border border-slate-700/50">
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="font-semibold">Recent activity</h3>
+        <button onClick={load} className="text-xs px-2 py-1 rounded-lg border border-slate-700 bg-slate-900/40">Refresh</button>
+      </div>
+      {loading ? (
+        <div className="text-sm text-slate-300">Loading…</div>
+      ) : rows.length === 0 ? (
+        <div className="text-sm text-slate-400">No recent activity.</div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="text-slate-400">
+              <tr>
+                <th className="text-left py-2 pr-4">Time</th>
+                <th className="text-left py-2 pr-4">Game</th>
+                <th className="text-left py-2 pr-4">Action</th>
+                <th className="text-right py-2 pr-4">Amount</th>
+                <th className="text-right py-2">Balance</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map(r => (
+                <tr key={r.id} className="border-t border-slate-700/50">
+                  <td className="py-2 pr-4">{new Date(r.created_at).toLocaleString()}</td>
+                  <td className="py-2 pr-4 capitalize">{r.game}</td>
+                  <td className="py-2 pr-4 capitalize">{r.action}</td>
+                  <td className="py-2 pr-4 text-right">{format(Number(r.amount))}</td>
+                  <td className="py-2 text-right">{format(Number(r.balance_after))}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }
