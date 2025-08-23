@@ -366,11 +366,12 @@ function Mines({ bet, canBet, balance, setBalance }) {
       setRound({ bombs, revealed: new Set(), state: "live", safe: 0 });
       setPendingCashout(0);
     } catch (e) {
-      console.error(e);
-      alert("Could not start round. Please try again.");
-    } finally {
-      setBusy(false);
-    }
+  console.error(e);
+  alert(e.message || "Could not start round. Please try again.");
+} finally {
+  setBusy(false);
+}
+
   };
 
   const clickTile = (idx) => {
