@@ -176,7 +176,7 @@ function LoginCard() {
   const [mode, setMode] = useState("signin"); // signin | signup
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  the [err, setErr] = useState("");
+  const [err, setErr] = useState("");
   const [loading, setLoading] = useState(false);
 
   const submit = async (e) => {
