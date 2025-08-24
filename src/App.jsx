@@ -187,7 +187,7 @@ function TopBar({ balance, userLabel, onLogout }) {
       <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
         <div className="flex items-center gap-3">
           <div className="h-9 w-9 rounded-xl bg-emerald-500 grid place-items-center font-black text-slate-900">GC</div>
-          <span className="font-semibold tracking-wide">GameCredits Casino</span>
+          <span className="font-semibold tracking-wide">AarizGC Casino</span>
         </div>
         <div className="flex items-center gap-3">
           <div className="px-3 py-1.5 rounded-xl bg-slate-800 border border-slate-700 text-sm">
